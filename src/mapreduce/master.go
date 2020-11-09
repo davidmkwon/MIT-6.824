@@ -94,7 +94,7 @@ func (mr *Master) forwardRegistrations(ch chan string) {
 		} else {
 			// wait for Register() to add an entry to workers[]
 			// in response to an RPC from a new worker.
-			mr.newCond.Wait()
+			mr.newCond.Wait() // note that this function will actually unlock the mutex
 		}
 		mr.Unlock()
 	}
