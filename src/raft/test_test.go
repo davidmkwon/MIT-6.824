@@ -53,6 +53,7 @@ func TestReElection2A(t *testing.T) {
 
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
+	fmt.Println("disconnected", leader1)
 	fmt.Println("checkpoint 0")
 	cfg.checkOneLeader()
 	fmt.Println("checkpoint 1")
@@ -60,6 +61,7 @@ func TestReElection2A(t *testing.T) {
 	// if the old leader rejoins, that shouldn't
 	// disturb the old leader.
 	cfg.connect(leader1)
+	fmt.Println("connected", leader1)
 	leader2 := cfg.checkOneLeader()
 	fmt.Println("checkpoint 2")
 
