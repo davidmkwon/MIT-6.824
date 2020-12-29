@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"log"
 	"math/rand"
@@ -121,6 +123,16 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	// note that function calls to this method will have locked the mutex, so
+	// we don't need to do it here
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -136,6 +148,14 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+
+	// note that function calls to this method will have locked the mutex, so
+	// we don't need to do it here
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.logs)
 }
 
 //
@@ -167,6 +187,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -179,7 +200,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// if sent term is > than current term, automatically convert to follower and change current term
 	if args.Term > rf.currentTerm {
-		fmt.Println(rf.me, "converted to follower")
+		//fmt.Println(rf.me, "converted to follower")
 		rf.currentTerm = args.Term
 		rf.state = FOLLOWER
 		rf.votedFor = -1
@@ -245,6 +266,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.currentTerm = reply.Term
 			rf.state = FOLLOWER
 			rf.votedFor = -1
+			rf.persist()
 		}
 	}
 	return ok
@@ -271,6 +293,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	//fmt.Println(rf.me, "recevied AE RPC from", args.LeaderID)
 
 	// set values for reply
@@ -291,7 +314,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// if sent term is > than current term, automatically convert to follower and change current term
 	if args.Term > rf.currentTerm {
-		fmt.Println(rf.me, "converted to follower")
+		//fmt.Println(rf.me, "converted to follower")
 		rf.currentTerm = args.Term
 		rf.state = FOLLOWER
 		rf.votedFor = -1
@@ -331,7 +354,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.logs = rf.logs[:relativeInd+1]
 		rf.logs = append(rf.logs, args.Entries...)
 		reply.Success = true
-		reply.NextIndex = lastLogInd + 1
+		reply.NextIndex = rf.logs[len(rf.logs)-1].Index + 1
 	}
 
 	// if LeaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -354,11 +377,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // this function makes a AppendEntries RPC call to the given server
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if ok && rf.state == LEADER && args.Term == rf.currentTerm {
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
 			rf.state = FOLLOWER
 			rf.votedFor = -1
+			rf.persist()
 		} else if reply.Success {
 			if len(args.Entries) > 0 {
 				rf.nextIndex[server] = args.Entries[len(args.Entries)-1].Index + 1
@@ -404,6 +430,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Index:   rf.logs[len(rf.logs)-1].Index + 1,
 		}
 		rf.logs = append(rf.logs, newLog)
+		rf.persist()
 	}
 
 	return index, term, isLeader
@@ -443,6 +470,7 @@ func (rf *Raft) startElection() {
 		LastLogTerm:  rf.logs[len(rf.logs)-1].Term,
 		Term:         rf.currentTerm,
 	}
+	rf.persist()
 	rf.mu.Unlock()
 
 	// loop over the servers
@@ -559,7 +587,7 @@ func (rf *Raft) act() {
 			select {
 			case <-time.After(randomTime):
 				// timeout -> so become candidate and start election
-				fmt.Println(rf.me, "becoming candidate")
+				//fmt.Println(rf.me, "becoming candidate")
 				rf.mu.Lock()
 				rf.state = CANDIDATE
 				rf.mu.Unlock()
@@ -579,21 +607,21 @@ func (rf *Raft) act() {
 			case <-time.After(randomTime):
 				// increment currentTerm again and start new election (this one timed out)
 				// note: this should be handled in the next iteration of the loop
-				fmt.Println(rf.me, "election timed out")
+				//fmt.Println(rf.me, "election timed out")
 				break
 			case <-rf.aeChan:
 				// should only get a message from this channel if a VALID heartbeat is received
 				// note: the RPC receiver should also have updated state to follower
-				fmt.Println(rf.me, "received heartbeat")
+				//fmt.Println(rf.me, "received heartbeat")
 				break
 			case <-rf.rvChan:
 				break
 			case success := <-rf.electionChan:
 				// switch state to leader and send heartbeats IF election was success
-				fmt.Println(rf.me, "election results")
+				//fmt.Println(rf.me, "election results")
 				if success {
 					// change state and reinitialize nextIndex and matchIndex
-					fmt.Println(rf.me, "won election")
+					//fmt.Println(rf.me, "won election")
 					rf.mu.Lock()
 					rf.state = LEADER
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -677,12 +705,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitChan = make(chan bool, 10)
 	rf.applyChan = applyCh
 
+	// load any persisted data if there is any
+	rf.readPersist(rf.persister.ReadRaftState())
+
 	// start act function in separate goroutine
 	go rf.act()
 	go rf.applyCommit()
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	//rf.readPersist(persister.ReadRaftState())
 
 	return rf
 }
